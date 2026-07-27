@@ -1,7 +1,6 @@
 # Detection & Hunting — SharePoint `/_trust` Deserialization
 
-Queries are written generically; adapt field names to your SIEM. Examples in a piped
-search-language (nPL-style) as used in the lab.
+Queries are written generically; adapt field names to your SIEM. Examples in a piped search-language (nPL-style) as used in the lab.
 
 ## A. The universal signature (present in EVERY variant) — start here
 
@@ -26,11 +25,8 @@ event_id = 4688 AND parent_process = "w3wp.exe"
   AND process IN ("cmd.exe", "powershell.exe", "whoami.exe", "csc.exe")
 ```
 
-- **Do not key solely on `w3wp → cmd → powershell`.** The `--rawcmd` variant is
-  `w3wp → powershell` directly and evades the `WebshellLauncher.A` behavioral signature.
-- Decode `powershell.exe -EncodedCommand <b64>` straight from the 4688 command line — it is
-  base64(UTF-16LE) and **not** otherwise obfuscated:
-  `echo <b64> | base64 -d | iconv -f utf-16le -t utf-8`
+- **Do not key solely on `w3wp → cmd → powershell`.** The `--rawcmd` variant is `w3wp → powershell` directly and evades the `WebshellLauncher.A` behavioral signature.
+- Decode `powershell.exe -EncodedCommand <b64>` straight from the 4688 command line — it is base64(UTF-16LE) and **not** otherwise obfuscated: `echo <b64> | base64 -d | iconv -f utf-16le -t utf-8`
 
 ## C. Defender behavioral (cmd-tree only)
 
@@ -39,9 +35,7 @@ provider = "Microsoft-Windows-Windows Defender" AND event_id IN (1116, 1117)
   AND threat_name = "Behavior:Win32/WebshellLauncher.A"
 ```
 
-⚠️ **A detection here does NOT mean the attack was stopped.** Remediation ("Remove") races the
-payload; the OOB beacon can complete first. On any 1116/1117 with this threat, **also** search
-DNS/proxy/firewall egress for the callback domain in the surrounding ±1 minute.
+⚠️ **A detection here does NOT mean the attack was stopped.** Remediation ("Remove") races the payload; the OOB beacon can complete first. On any 1116/1117 with this threat, **also** search DNS/proxy/firewall egress for the callback domain in the surrounding ±1 minute.
 
 ## D. Egress / OOB beacon
 
@@ -63,9 +57,5 @@ dns_query matches "*.oast.*" OR "*.<newly-seen-domain>"
 
 ## The key-dump's telemetry footprint (AMSI-dependent)
 
-- In the default-config farm (Defender AV): **no `4688` child, no Defender event, no beacon** — it
-  runs in-process in `w3wp`. Detect via **A** (the `/_trust` request) + response-size anomaly.
-- **BUT detection is AMSI/EDR-dependent.** With SharePoint's AMSI integration enabled, the request
-  body is surfaced to AV/EDR scanning; a **CrowdStrike** detection of this chain was observed
-  separately. Check whether SharePoint AMSI integration is enabled in your environment — it changes
-  whether this vector is catchable at the AV layer.
+- In the default-config farm (Defender AV): **no `4688` child, no Defender event, no beacon** — it runs in-process in `w3wp`. Detect via **A** (the `/_trust` request) + response-size anomaly.
+- **BUT detection is AMSI/EDR-dependent.** With SharePoint's AMSI integration enabled, the request body is surfaced to AV/EDR scanning; a **CrowdStrike** detection of this chain was observed separately. Check whether SharePoint AMSI integration is enabled in your environment — it changes whether this vector is catchable at the AV layer.
