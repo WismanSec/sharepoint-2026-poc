@@ -164,9 +164,9 @@
             <code>SecurityContextToken</code> triggers <b>BinaryFormatter deserialization</b> in
             <code>w3wp.exe</code> → <b>RCE as the web-app pool identity</b>.</li>
           <li>The same primitive dumps the farm <b>machine keys</b> entirely in-process — in a
-            default-config farm, <b>no child process, no Defender alert, no beacon</b> (AMSI/EDR
-            posture can change this — see Trap 3). Stolen keys forge <code>__VIEWSTATE</code>/auth
-            tokens <b>that survive patching</b>.</li>
+            default-config farm, <b>no child process, no Defender alert, no beacon</b> (enabling AMSI
+            request-body scanning for <code>/_trust</code> detects and blocks it). Stolen keys forge
+            <code>__VIEWSTATE</code>/auth tokens <b>that survive patching</b>.</li>
           <li><b>Patching is not enough — rotate machine keys</b>, and hunt the <code>/_trust</code>
             request: it is the one artifact present in <em>every</em> variant.</li>
         </ul>
@@ -293,35 +293,46 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
 
     <section>
       <div class="sec-head col"><span class="eyebrow">04 detection &amp; hunting</span></div>
-      <h2 class="col">What to hunt — and two traps</h2>
+      <h2 class="col">What to hunt</h2>
       <p class="col">The web request is the only artifact common to RCE <em>and</em> the stealthy
         key dump. Start here:</p>
       <pre class="col" style="max-width:var(--measure)"><code>uri_path = "/_trust/default.aspx" AND http_method = "POST"
   AND body contains "wa=wsignin1.0"
   AND body contains "RequestSecurityTokenResponse"</code></pre>
+      <p class="col">Legitimate WS-Federation sign-in traffic to this endpoint is predominantly
+        <b>HTTP 302</b>; the exploit returns other statuses (<b>200</b>, <b>500</b>, a connection
+        reset, or <b>400</b> when AMSI blocks). Where the endpoint carries real sign-in volume, a
+        non-302 response to <code>POST /_trust/default.aspx</code> is anomalous.</p>
 
       <div class="call off col" style="max-width:var(--measure)">
-        <h4>Trap 1 — don't key on <code>w3wp → cmd</code></h4>
+        <h4>Process-pattern evasion</h4>
         <p style="margin:.2rem 0 0">The <code>-RawCmd</code> variant is <code>w3wp → powershell</code>
           directly and drew <b>zero</b> Defender events. Hunt <code>w3wp.exe</code> spawning
           <code>powershell.exe</code> <b>with no cmd.exe hop</b>, and decode any
           <code>-EncodedCommand</code> straight from 4688.</p>
       </div>
       <div class="call off col" style="max-width:var(--measure)">
-        <h4>Trap 2 — detection ≠ prevention</h4>
+        <h4>Detection is not prevention</h4>
         <p style="margin:.2rem 0 0">On the cmd tree Defender fired <code>WebshellLauncher.A</code>
           and <em>removed</em> the chain — yet the beacon (DNS + HTTP) still completed first. On any
           such detection, <b>also pull DNS/proxy/egress</b> for the callback domain around that time.</p>
       </div>
-      <div class="call off col" style="max-width:var(--measure)">
-        <h4>Trap 3 — the key dump is stealthy, but AMSI-dependent</h4>
-        <p style="margin:.2rem 0 0">In this default-config farm (Defender AV) the key dump produced
-          <b>no 4688 child, no Defender event, and no beacon</b> — it runs in-process in
-          <code>w3wp</code>, leaving only the <code>/_trust</code> POST + anomalous response.
-          But visibility is <b>AMSI/EDR-dependent</b>: with SharePoint's AMSI integration enabled the
-          request body is exposed to AV scanning, and a <b>CrowdStrike</b> detection of this chain was
-          observed separately. Don't assume invisibility — verify your AMSI posture and hunt the request.</p>
+      <div class="call def col" style="max-width:var(--measure)">
+        <h4>AMSI request-body scanning</h4>
+        <p style="margin:.2rem 0 0">Both chains carry their payload in the <code>/_trust</code> request
+          body. In the default configuration (Balanced mode, <code>/_trust</code> not in the
+          targeted-endpoint list) the body is not scanned and both chains execute with no detection.
+          Setting body-scan to <b>Full</b>, or keeping Balanced and adding
+          <code>/_trust/default.aspx</code> as a targeted endpoint, rejects the request
+          <b>HTTP 400 before deserialization</b> — no process is created — and Defender records
+          <code>Exploit:Script/SpCookieExec.A</code> (source <b>AMSI</b>, action <b>Quarantine</b>)
+          for both chains.</p>
       </div>
+      <pre class="col" style="max-width:var(--measure)"><code>$wa = Get-SPWebApplication https://&lt;webapp&gt;
+$wa.AMSIBodyScanMode = 2                              # Full: scan all endpoints
+# or keep Balanced mode and scan this endpoint only:
+$wa.AddAMSITargetedEndpoints('/_trust/default.aspx', 1)
+$wa.Update(); iisreset</code></pre>
     </section>
 
     <section>
@@ -330,11 +341,56 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
       <ol class="steps">
         <li><b>Patch</b> to the fixed SharePoint build (July 2026 / KB5002882).</li>
         <li><b>Rotate machine keys</b> farm-wide (<code>Set-SPMachineKey</code> + <code>IISReset</code>).
-          Patching does <b>not</b> revoke keys an attacker already stole.</li>
+          Patching stops the RCE but does <b>not</b> revoke keys already stolen; rotation removes the
+          ability to forge <code>FedAuth</code>/<code>SecurityContextToken</code>/<code>__VIEWSTATE</code>.</li>
         <li><b>Hunt historical IIS logs</b> for the <code>/_trust</code> signature; if present,
           assume key compromise.</li>
         <li><b>Review for forged <code>__VIEWSTATE</code></b> / anomalous auth after first-seen.</li>
+        <li><b>Enable AMSI request-body scanning for <code>/_trust</code></b> (Full mode, or add it as a
+          Balanced targeted endpoint) to block both chains at the request layer.</li>
       </ol>
+    </section>
+
+    <section>
+      <div class="sec-head col"><span class="eyebrow">06 root cause</span></div>
+      <h2 class="col">June → July patch diff</h2>
+      <p class="col">Static analysis of the vendor's fix confirms the mechanism and settles whether the
+        RCE needs the stolen machine keys: it does not. A binary patch-diff of
+        <code>Microsoft.SharePoint.IdentityModel.dll</code> between the June CU (KB5002873,
+        16.0.19725.20384) and July CU (KB5002882, 16.0.19725.20434), decompiled and compared, shows the
+        exploited read path <code>SPFederationAuthenticationModuleV2.OnAuthenticateRequest</code> →
+        <code>SPSessionSecurityTokenHandlerV2</code> changing as follows:</p>
+      <div class="tablecard col" style="max-width:var(--measure)">
+        <div class="scroll"><table style="min-width:560px">
+          <thead><tr><th></th><th>June (vulnerable)</th><th>July (fixed)</th></tr></thead>
+          <tbody>
+            <tr><td class="inv">cookie transform</td>
+              <td><code>{ new DeflateCookieTransform() }</code> (deflate only)</td>
+              <td><code>{ new NotSupportedCookieTransform() }</code> (Decode/Encode throw)</td></tr>
+            <tr><td class="inv">ReadToken</td>
+              <td>none (inherits base)</td>
+              <td>all overrides throw <code>NotSupportedException</code></td></tr>
+          </tbody>
+        </table></div>
+      </div>
+      <p class="col">The pre-patch transform chain was <b>deflate-only</b> — no encryption and no
+        MAC/signature transform keyed on the machine key. The base <code>ReadToken</code> applies the
+        transforms and deserializes the cookie value, so a forged token is inflated and deserialized
+        <b>with no machine-key validation gate</b>; the gadget fires without the
+        <code>ValidationKey</code>/<code>DecryptionKey</code> (key-independent). The fix <b>removes the
+        sink</b> rather than adding a signature or decryption check — there was no key gate to fix.</p>
+      <p class="col">The machine-key disclosure is therefore a <b>separate persistence objective</b>
+        (forging <code>FedAuth</code>/<code>SecurityContextToken</code>/<code>__VIEWSTATE</code>), not a
+        prerequisite for the RCE — the key-dump is itself an RCE over the same path and runs before any
+        key is stolen. A second, unrelated hardening ships in the same July CU (JWT actor-token
+        signature validation in <code>SPJsonWebSecurityTokenHandlerV2</code>) — a distinct path, not the
+        one covered here.</p>
+      <div class="call def col" style="max-width:var(--measure)">
+        <h4>Remediation verification (from the diff)</h4>
+        <p style="margin:.2rem 0 0">Confirm farm property <code>SessionCookieTransformProtectionEnabled</code>
+          is <b>not</b> set to <code>false</code> (that reverts to the vulnerable deflate-only transform),
+          and that the <code>DisableActorTokenSignatureValidation</code> debug flag is not set.</p>
+      </div>
     </section>
 
   </div>
