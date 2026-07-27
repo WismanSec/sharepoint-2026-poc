@@ -1,10 +1,10 @@
 # SharePoint `/_trust` WS-Federation Deserialization — PoC & Detection Notes
 
-> 📖 **Live writeup (GitHub Pages):** https://sp-poc.wismansec.com/ — branded HTML report of everything below.
+> 📖 **Live writeup (GitHub Pages):** https://sp-poc.wismansec.com/ — HTML rendering of this document.
 >
 > **Affected:** SharePoint Server **2016, 2019, and Subscription Edition**.
 
-Reconstruction of a SharePoint Server (Subscription Edition) intrusion in an isolated lab, built to (a) understand the full attacker capability, (b) determine what a defender should hunt for — including stealthy persistence — and (c) share a light PoC to aid other investigators.
+Reconstruction of a SharePoint Server (Subscription Edition) intrusion in an isolated lab, built to (a) understand the full attacker capability, (b) determine what a defender should hunt for — including stealthy persistence — and (c) share a PoC to aid other investigators.
 
 > ⚠️ **Authorized research only.** Everything here was performed on isolated, personally-owned lab hardware and accounts, against a build deliberately left unpatched for the test. The underlying issue is **fixed by the vendor** — apply the current updates. Do **not** run this against systems you do not own and have explicit authorization to test. Machine-key values, internal hostnames/IPs, and callback domains in the real capture have been **redacted** here.
 
@@ -18,8 +18,8 @@ Reconstruction of a SharePoint Server (Subscription Edition) intrusion in an iso
 ## TL;DR for responders
 
 - A single unauthenticated `POST /_trust/default.aspx` (WS-Federation sign-in) carrying a malicious `SecurityContextToken` triggers **BinaryFormatter deserialization** in the SharePoint worker (`w3wp.exe`), yielding **remote code execution as the web-app pool identity**.
-- The **same primitive** can dump the farm **machine keys** (ValidationKey/DecryptionKey) entirely in-process — in a default-config farm, **no child process, no AV alert, no beacon** (AMSI/EDR posture can change this — see §5). Those keys let an attacker forge `__VIEWSTATE`/auth tokens **that survive patching.**
-- **Patching is not enough. Rotate machine keys** on any farm you believe was reached, and hunt the `/_trust` request signature — it is the one artifact present in *every* variant.
+- The **same primitive** can dump the farm **machine keys** (ValidationKey/DecryptionKey) entirely in-process — in a default-config farm, **no child process, no AV alert, no beacon** (enabling AMSI request-body scanning for `/_trust` detects and blocks it — see §5). Those keys let an attacker forge `__VIEWSTATE`/auth tokens **that survive patching.**
+- **Patching is not enough. Rotate machine keys** on any farm you believe was hit, and hunt the `/_trust` request signature — it is the one artifact present in *every* variant.
 
 ---
 
@@ -79,7 +79,7 @@ Key command line recovered verbatim from **Security 4688** (encoding ≠ evasion
 
 **The one signature present in every variant** — hunt this first:
 
-- IIS / SharePoint logs: `POST /_trust/default.aspx` with body `wa=wsignin1.0` and a `wresult` containing `RequestSecurityTokenResponse` + `SecurityContextToken`/`<Cookie>`. Unauthenticated, often anomalous User-Agent, frequently HTTP 200 **or** a reset — status is **not** reliable.
+- IIS / SharePoint logs: `POST /_trust/default.aspx` with body `wa=wsignin1.0` and a `wresult` containing `RequestSecurityTokenResponse` + `SecurityContextToken`/`<Cookie>`. Unauthenticated, often anomalous User-Agent. **Response-status baseline:** legitimate WS-Federation sign-in traffic to this endpoint is predominantly **HTTP 302**; the exploit returns other statuses (**200**, **500**, a connection reset, or **400** when AMSI blocks). Where the endpoint carries real sign-in volume, treat a non-302 response to `POST /_trust/default.aspx` as anomalous. Status alone does not confirm exploit success — a successful run returned both 200 and a reset.
 
 **Process-based (RCE variants only):**
 
@@ -87,21 +87,73 @@ Key command line recovered verbatim from **Security 4688** (encoding ≠ evasion
 - Any `powershell.exe -EncodedCommand` under `w3wp` — decode the blob straight from **4688** (it is not obfuscated at rest).
 - `w3wp.exe → whoami.exe` (recon), or child `conhost.exe`.
 
-**Two caveats that change response decisions:**
+**Two findings that affect response decisions:**
 
-1. **Detection ≠ prevention.** Where Defender fired `WebshellLauncher.A` and *removed* the chain, the OOB beacon still completed in one run before remediation won the race. **Treat any such detection as possible successful exfil — pull DNS/proxy/outbound for the callback domain around the detection time.**
-2. **The key-dump is stealthy — but AMSI-dependent.** In the default-config farm (Defender AV) it ran in-process with **no 4688 child, no Defender event, no beacon** — only the `/_trust` request + response betray it. Visibility depends on AMSI/EDR posture: with SharePoint's AMSI integration enabled the request body is exposed to AV, and a **CrowdStrike** detection of this chain was observed separately. Verify your AMSI posture; don't assume invisibility.
+1. **A behavioral detection does not guarantee prevention.** When Defender detected the process chain as `Behavior:Win32/WebshellLauncher.A` and remediated it, the outbound beacon was observed to complete before remediation finished in at least one execution. Treat such a detection as a possible successful callback and review DNS, proxy, and outbound logs for the callback destination around the detection time.
+2. **The machine-key disclosure produces no process, service, or network telemetry.** It executes inside `w3wp.exe` and returns the keys in the HTTP response, so the only host-side evidence is the `POST /_trust/default.aspx` request and its response. Whether it is detected depends on the AMSI request-body scan configuration.
 
-MITRE-ish: T1190 (exploit public-facing app) · T1059.001 (PowerShell) · T1552 (unsecured credentials / machine keys) · T1550 (use of forged auth material, post-theft).
+MITRE ATT&CK: T1190 (exploit public-facing application) · T1059.001 (PowerShell) · T1552 (unsecured credentials — machine keys) · T1550 (use of forged authentication material, post-theft).
+
+### AMSI request-body scanning
+
+Both chains deliver their payload in the body of the `POST /_trust/default.aspx` request. Whether Microsoft Defender inspects that payload is governed by SharePoint's AMSI request-body scan configuration for the web application. Three configurations were tested directly against this farm (SharePoint Server Subscription Edition, Microsoft Defender):
+
+| AMSI request-body configuration | Result |
+|---|---|
+| Balanced mode, `/_trust/default.aspx` not in the targeted-endpoint list (default) | request body not scanned; both chains execute; no Defender detection |
+| Balanced mode, `/_trust/default.aspx` added as a targeted endpoint | request body scanned; request blocked |
+| Full mode (all endpoints scanned) | request body scanned; request blocked |
+
+In the default configuration the request body is not inspected, so both the RCE and the machine-key disclosure complete and produce no AMSI detection. In either scanning configuration the request is rejected with **HTTP 400 before deserialization**, no worker process is created, and Defender records:
+
+| Field | Value |
+|---|---|
+| Threat | `Exploit:Script/SpCookieExec.A` (ID 2147969862) |
+| Severity / category | Severe / Exploit |
+| Detection source | AMSI |
+| Action | Quarantine |
+| Process | `C:\Windows\System32\inetsrv\w3wp.exe` |
+
+Because the request is blocked before any code runs, no child process is created and no `Security 4688` process-creation events are produced for either chain. The RCE variant that spawns `powershell.exe` directly (without an intermediate `cmd.exe`) is blocked identically.
+
+Configuration (SharePoint Management Shell, per web application):
+
+```powershell
+$wa = Get-SPWebApplication https://<webapp>
+$wa.AMSIBodyScanMode = 2                              # Full: scan all endpoints
+# or keep Balanced mode and scan this endpoint only:
+$wa.AddAMSITargetedEndpoints('/_trust/default.aspx', 1)
+$wa.Update(); iisreset
+```
 
 ## 6. Remediation
 
 1. **Patch** to the fixed SharePoint build.
-2. **Rotate machine keys** (`Set-SPMachineKey` / update `web.config` machineKey + `IISReset`) on any farm potentially reached — patching does **not** revoke keys an attacker already stole.
-3. Hunt historical IIS logs for the `/_trust` signature above; if present, assume key compromise.
+2. **Rotate machine keys** (`Set-SPMachineKey` / update `web.config` machineKey + `IISReset`) on any farm potentially reached. Patching stops the RCE but does **not** revoke keys already stolen; rotation removes the attacker's ability to forge `FedAuth` / `SecurityContextToken` / `__VIEWSTATE` for persistence.
+3. Hunt historical IIS logs for `POST /_trust/default.aspx` requests carrying a `wresult` `SecurityContextToken`; if present, assume key compromise.
 4. Review for forged `__VIEWSTATE` / anomalous auth after the first-seen date.
+5. **Enable AMSI request-body scanning for `/_trust`** (Full mode, or add `/_trust/default.aspx` as a Balanced targeted endpoint — see §5). This blocks **both** the RCE and the key-dump at the request layer, before execution.
 
-## 7. Repo layout
+## 7. Root cause — June → July patch diff
+
+Static analysis of the vendor's fix confirms the mechanism and settles whether the RCE needs the stolen machine keys: it does not. Method — binary patch-diff of `Microsoft.SharePoint.IdentityModel.dll` between the **June CU (KB5002873, 16.0.19725.20384)** and **July CU (KB5002882, 16.0.19725.20434)**; decompiled and compared, read-only.
+
+The exploited read path is `SPFederationAuthenticationModuleV2.OnAuthenticateRequest` → `SPSessionSecurityTokenHandlerV2` (a subclass of `System.IdentityModel.Tokens.SessionSecurityTokenHandler`). The change:
+
+| | June (vulnerable) | July (fixed) |
+|---|---|---|
+| Cookie transform chain | `s_Transforms = { new DeflateCookieTransform() }` (deflate only) | `s_Transforms = { new NotSupportedCookieTransform() }` (`Decode`/`Encode` throw) |
+| `ReadToken` overrides | none (inherits base `ReadToken`) | `ReadToken(XmlReader, SecurityTokenResolver)`, `ReadToken(XmlReader)`, `ReadToken(string)` all throw `NotSupportedException` |
+
+**Interpretation.** The pre-patch transform chain was deflate-only — no encryption and no MAC/signature transform keyed on the machine key. The base `ReadToken` applies the transforms and deserializes the cookie value, so a forged token is inflated and deserialized with no machine-key validation gate — the gadget fires without the `ValidationKey`/`DecryptionKey` (key-independent). The fix removes the sink (the transform and `ReadToken` throw) rather than adding a signature/decryption check, confirming there was no key gate to fix.
+
+**Consequence.** The machine-key disclosure is a separate persistence objective (forging `FedAuth` / `SecurityContextToken` / `__VIEWSTATE`), not a prerequisite for the RCE — the key-dump is itself an RCE over the same path and runs before any key is stolen.
+
+A second, unrelated hardening ships in the same July CU: JWT actor-token signature validation in `SPJsonWebSecurityTokenHandlerV2` (`RequireSignedTokens` false→true, new `VerifyActorTokenSignature`) — a distinct OAuth / server-to-server actor-token path, not the WS-Federation session-token path covered here.
+
+**Remediation verification (from the diff):** confirm farm property `SessionCookieTransformProtectionEnabled` is **not** set to `false` (that reverts to the vulnerable deflate-only transform), and that the `DisableActorTokenSignatureValidation` debug flag is not set.
+
+## 8. Repo layout
 
 ```
 README.md            – this document
