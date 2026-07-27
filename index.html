@@ -261,8 +261,14 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
             </tbody>
           </table>
         </div>
-        <caption>Status is not a reliable success signal — successful runs returned both HTTP 200 and connection-reset.</caption>
       </div>
+      <p class="col" style="font-size:.82rem;color:var(--muted);margin:8px 0 0">These outcomes are for the
+        <b>default AMSI configuration</b> (Balanced mode, <code>/_trust</code> not scanned). With AMSI
+        request-body scanning of <code>/_trust</code> enabled, every row is instead blocked at the request
+        layer — HTTP 400, <code>Exploit:Script/SpCookieExec.A</code>, before execution (see the AMSI
+        request-body scanning section).</p>
+      <p class="col" style="font-size:.82rem;color:var(--muted);margin:4px 0 0">Status is not a reliable
+        success signal — successful runs returned both HTTP 200 and a connection reset.</p>
 
       <h3 class="col">Same exploit, two trees — only one is seen</h3>
       <div class="trees">
@@ -298,7 +304,8 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
         key dump. Start here:</p>
       <pre class="col" style="max-width:var(--measure)"><code>uri_path = "/_trust/default.aspx" AND http_method = "POST"
   AND body contains "wa=wsignin1.0"
-  AND body contains "RequestSecurityTokenResponse"</code></pre>
+  AND body contains "RequestSecurityTokenResponse"
+  AND body contains "SecurityContextToken"   # exploit-specific; legit sign-in carries a SAML assertion</code></pre>
       <p class="col">Legitimate WS-Federation sign-in traffic to this endpoint is predominantly
         <b>HTTP 302</b>; the exploit returns other statuses (<b>200</b>, <b>500</b>, a connection
         reset, or <b>400</b> when AMSI blocks). Where the endpoint carries real sign-in volume, a
@@ -343,8 +350,12 @@ $wa.Update(); iisreset</code></pre>
         <li><b>Rotate machine keys</b> farm-wide (<code>Set-SPMachineKey</code> + <code>IISReset</code>).
           Patching stops the RCE but does <b>not</b> revoke keys already stolen; rotation removes the
           ability to forge <code>FedAuth</code>/<code>SecurityContextToken</code>/<code>__VIEWSTATE</code>.</li>
-        <li><b>Hunt historical IIS logs</b> for the <code>/_trust</code> signature; if present,
-          assume key compromise.</li>
+        <li><b>Hunt historical IIS logs</b> for <code>POST /_trust/default.aspx</code>. Legitimate
+          WS-Federation sign-in also hits this endpoint with <code>wa=wsignin1.0</code>, so key on the
+          exploit-specific structure: a <code>wresult</code> whose token is a
+          <code>&lt;SecurityContextToken&gt;</code> with a base64 <code>&lt;Cookie&gt;</code> (legitimate
+          sign-in carries a signed SAML assertion instead), a non-302 response, and a scripted
+          User-Agent. If present, assume key compromise.</li>
         <li><b>Review for forged <code>__VIEWSTATE</code></b> / anomalous auth after first-seen.</li>
         <li><b>Enable AMSI request-body scanning for <code>/_trust</code></b> (Full mode, or add it as a
           Balanced targeted endpoint) to block both chains at the request layer.</li>
@@ -386,10 +397,17 @@ $wa.Update(); iisreset</code></pre>
         signature validation in <code>SPJsonWebSecurityTokenHandlerV2</code>) — a distinct path, not the
         one covered here.</p>
       <div class="call def col" style="max-width:var(--measure)">
-        <h4>Remediation verification (from the diff)</h4>
-        <p style="margin:.2rem 0 0">Confirm farm property <code>SessionCookieTransformProtectionEnabled</code>
-          is <b>not</b> set to <code>false</code> (that reverts to the vulnerable deflate-only transform),
-          and that the <code>DisableActorTokenSignatureValidation</code> debug flag is not set.</p>
+        <h4>Applying the fix — and two settings that undo it</h4>
+        <p style="margin:.2rem 0 .4rem">The fix is the July CU (<b>KB5002882</b>): it swaps the deflate-only
+          cookie transform for one that throws, removing the sink. Install it, then confirm neither farm
+          setting reverts or bypasses it:</p>
+        <ul>
+          <li><code>SessionCookieTransformProtectionEnabled</code> set to <code>false</code> reverts the
+            session-token cookie to the vulnerable deflate-only transform, re-opening the RCE and key-dump —
+            leave it at its default.</li>
+          <li>The <code>DisableActorTokenSignatureValidation</code> debug flag re-opens the separate JWT
+            actor-token signature bypass hardened in the same update — confirm it is not set.</li>
+        </ul>
       </div>
     </section>
 
