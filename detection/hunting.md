@@ -11,6 +11,7 @@ The web request is the only artifact common to RCE **and** the stealthy key-dump
 uri_path = "/_trust/default.aspx" AND http_method = "POST"
   AND request_body contains "wa=wsignin1.0"
   AND request_body contains "RequestSecurityTokenResponse"
+  AND request_body contains "SecurityContextToken"   # exploit-specific; legit sign-in carries a SAML assertion
 ```
 
 Pivots / enrich:

@@ -62,6 +62,8 @@ Every row is one real detonation; artifacts pulled from the SIEM + OOB listener 
 | OOB RCE, **`-Diag`** | `w3wp.exe → powershell.exe → whoami.exe` | none | landed | env disclosure exfil: `{host, whoami, PSver, LanguageMode}` |
 | **Machine-key dump** | *(none — in-process)* | **none** | *(none)* | **only** the `/_trust` POST + anomalous response carrying the keys |
 
+These outcomes are for the **default AMSI configuration** (Balanced mode, `/_trust` not scanned). With AMSI request-body scanning of `/_trust` enabled (Full mode or targeted), every row is instead **blocked at the request layer** — HTTP 400, `Exploit:Script/SpCookieExec.A`, before execution (see §5).
+
 Key command line recovered verbatim from **Security 4688** (encoding ≠ evasion):
 
 ```
@@ -130,7 +132,7 @@ $wa.Update(); iisreset
 
 1. **Patch** to the fixed SharePoint build.
 2. **Rotate machine keys** (`Set-SPMachineKey` / update `web.config` machineKey + `IISReset`) on any farm potentially reached. Patching stops the RCE but does **not** revoke keys already stolen; rotation removes the attacker's ability to forge `FedAuth` / `SecurityContextToken` / `__VIEWSTATE` for persistence.
-3. Hunt historical IIS logs for `POST /_trust/default.aspx` requests carrying a `wresult` `SecurityContextToken`; if present, assume key compromise.
+3. Hunt historical IIS logs for `POST /_trust/default.aspx`. Legitimate WS-Federation sign-in also targets this endpoint with `wa=wsignin1.0`, so key on the exploit-specific structure, not the endpoint alone: a `wresult` whose token is a `<SecurityContextToken>` with a base64 `<Cookie>` (namespace `http://schemas.microsoft.com/ws/2006/05/security`) — legitimate sign-in instead carries a signed SAML assertion — together with a non-302 response (200/500/400 or a reset) and a scripted/anomalous User-Agent. The key-dump sends two such POSTs in rapid succession. If present, assume key compromise.
 4. Review for forged `__VIEWSTATE` / anomalous auth after the first-seen date.
 5. **Enable AMSI request-body scanning for `/_trust`** (Full mode, or add `/_trust/default.aspx` as a Balanced targeted endpoint — see §5). This blocks **both** the RCE and the key-dump at the request layer, before execution.
 
@@ -151,7 +153,7 @@ The exploited read path is `SPFederationAuthenticationModuleV2.OnAuthenticateReq
 
 A second, unrelated hardening ships in the same July CU: JWT actor-token signature validation in `SPJsonWebSecurityTokenHandlerV2` (`RequireSignedTokens` false→true, new `VerifyActorTokenSignature`) — a distinct OAuth / server-to-server actor-token path, not the WS-Federation session-token path covered here.
 
-**Remediation verification (from the diff):** confirm farm property `SessionCookieTransformProtectionEnabled` is **not** set to `false` (that reverts to the vulnerable deflate-only transform), and that the `DisableActorTokenSignatureValidation` debug flag is not set.
+**Applying the fix.** The fix is the July CU (KB5002882): it swaps the deflate-only cookie transform for one that throws, removing the sink. After installing it, confirm neither farm setting reverts or bypasses it — `SessionCookieTransformProtectionEnabled` set to `false` reverts the session-token cookie to the vulnerable deflate-only transform (re-opening the RCE and key-dump), and the `DisableActorTokenSignatureValidation` debug flag re-opens the separate JWT actor-token signature bypass hardened in the same update.
 
 ## 8. Repo layout
 
