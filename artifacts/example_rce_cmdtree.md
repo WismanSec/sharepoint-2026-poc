@@ -1,4 +1,4 @@
-# Example artifact — OOB RCE (default cmd tree), redacted
+# Example artifact: OOB RCE (default cmd tree), redacted
 
 ## Security 4688 (process creation), host SHAREPOINT01, user LAB\sp_pool (High integrity)
 
@@ -18,4 +18,4 @@ Severity : Severe        Category: Suspicious Behavior
 Path     : behavior:_process: C:\Windows\System32\inetsrv\w3wp.exe, pid:<pid> ; process:_pid:<child>
 Action   : Remove        Remediation User: NT AUTHORITY\SYSTEM   ("operation completed successfully")
 ```
-NOTE: in this run the OOB beacon (DNS + HTTP) still completed BEFORE remediation — detection did not prevent exfil.
+NOTE: in this run the OOB beacon (DNS + HTTP) still completed BEFORE remediation; detection did not prevent exfil.
